@@ -215,16 +215,22 @@ def load_weather_owid() -> pd.DataFrame:
     # teplota: měsíční hodnoty -> roční průměr (jen roky se všemi 12 měsíci)
     t = _owid_csv("average-monthly-surface-temperature", "", "owid_temperature_monthly.csv")
     t = _iso3_to_geo(t, "Code")
-    date_col = next((c for c in t.columns if c.lower() == "day"), None)
-    vcols = _owid_values(t)
+    # OWID: sloupec "Month" ve tvaru "YYYY-MM" (dříve "Day" ve tvaru "YYYY-MM-DD")
+    date_col = next((c for c in t.columns if c.lower() in ("month", "day", "date")), None)
+    vcols = [c for c in _owid_values(t) if c.lower() != "year"]
     monthly = next((c for c in vcols if "month" in c.lower()), vcols[0])
     if date_col:
-        d = pd.to_datetime(t[date_col])
+        d = pd.to_datetime(t[date_col].astype(str).str[:7], format="%Y-%m")
         t = t.assign(year=d.dt.year, month=d.dt.month)
-        winter = t[t["month"].isin([1, 2, 12])].groupby(["geo", "year"])[monthly].mean()
         g = t.groupby(["geo", "year"])[monthly].agg(["mean", "count"])
-        temp = pd.DataFrame({"temp_mean_c": g["mean"].where(g["count"] == 12),
-                             "temp_winter_c": winter}).reset_index()
+        # meteorologická zima roku Y = prosinec Y-1 + leden Y + únor Y
+        w = t[t["month"].isin([1, 2, 12])].copy()
+        w["wyear"] = w["year"] + (w["month"] == 12).astype(int)
+        wg = w.groupby(["geo", "wyear"])[monthly].agg(["mean", "count"])
+        wg.index.names = ["geo", "year"]
+        temp = pd.DataFrame({"temp_mean_c": g["mean"].where(g["count"] == 12)})
+        temp = temp.join(wg["mean"].where(wg["count"] == 3).rename("temp_winter_c"),
+                         how="outer").reset_index()
     else:  # kdyby OWID vrátil rovnou roční hodnoty
         temp = t.rename(columns={"Year": "year", monthly: "temp_mean_c"})[["geo", "year", "temp_mean_c"]]
 
@@ -234,7 +240,46 @@ def load_weather_owid() -> pd.DataFrame:
     pv = _owid_values(p)[0]
     prec = p.rename(columns={"Year": "year", pv: "precip_mm"})[["geo", "year", "precip_mm"]]
 
-    return restrict_years(temp.merge(prec, on=["geo", "year"], how="outer"))
+    out = restrict_years(temp.merge(prec, on=["geo", "year"], how="outer"))
+    out["weather_src"] = "era5_country"
+    # Malta (a jiné malé státy) v OWID chybí – ERA5 maska zemí je moc hrubá.
+    # Doplníme bodovými daty ERA5 z Open-Meteo pro hlavní město.
+    wvars = ["temp_mean_c", "temp_winter_c", "precip_mm"]
+    has = out.groupby("geo")[wvars].count().min(axis=1)
+    missing = sorted(g for g in COUNTRIES if has.get(g, 0) == 0)
+    if missing:
+        print(f"    ! OWID nemá (všechny) údaje pro {missing} -> doplňuji z Open-Meteo (hlavní město)")
+        fill = [f for f in (_openmeteo_weather_point(g) for g in missing) if f is not None]
+        if fill:
+            out = out[~out["geo"].isin(missing)]  # celá země z jednoho zdroje
+            out = pd.concat([out] + fill, ignore_index=True)
+    return out
+
+
+def _openmeteo_weather_point(geo: str) -> pd.DataFrame | None:
+    from .config import RAW_DIR
+    name, lat, lon = CAPITALS[geo]
+    params = {"latitude": lat, "longitude": lon,
+              "start_date": f"{YEAR_MIN - 1}-12-01", "end_date": f"{YEAR_MAX}-12-31",
+              "daily": "temperature_2m_mean,precipitation_sum", "timezone": "GMT"}
+    try:
+        path = fetch("https://archive-api.open-meteo.com/v1/archive",
+                     f"openmeteo_weather_{geo}_{YEAR_MIN}_{YEAR_MAX}.json", params=params, retries=6)
+    except DataSourceError as e:
+        print(f"    ! {geo}: {e}")
+        return None
+    d = pd.DataFrame(json.loads(path.read_text())["daily"])
+    d["time"] = pd.to_datetime(d["time"])
+    d["year"], d["month"] = d["time"].dt.year, d["time"].dt.month
+    w = d[d["month"].isin([12, 1, 2])].copy()
+    w["year"] = w["year"] + (w["month"] == 12).astype(int)
+    out = pd.DataFrame({
+        "temp_mean_c": d.groupby("year")["temperature_2m_mean"].mean(),
+        "temp_winter_c": w.groupby("year")["temperature_2m_mean"].mean(),
+        "precip_mm": d.groupby("year")["precipitation_sum"].sum(),
+    }).reset_index()
+    out["geo"], out["weather_src"] = geo, "era5_capital_point"
+    return restrict_years(out)
 
 
 # =========================================================================

@@ -32,7 +32,7 @@ v prohlížeči a uložit do `data/raw/` pod jménem, které program vypíše.
 | 1 | Eurostat `isoc_ci_ac_i` (I_IUSNET) | `sm_total`, `sm_16_24`, `sm_16_29` (% lidí na soc. sítích) | 2011, 2013– | **2012 chybí** → `*_interp` = lineární interpolace |
 | 2 | IHME GBD 2023 – **ruční stažení**, viz níže | `dep_agestd`, `dep_allages`, `dep_15_19`, `dep_20_24`, `dep_25_29`, totéž `anx_*` – prevalence v % | 1990–2023 | modelované odhady |
 | 3 | Eurostat `hlth_cd_asdr2`, `hlth_cd_acdr2` | `suicide_sdr_T/M/F` (standardizovaná úmrtnost), `suicide_cdr_15_19…` | 2011–2023 | |
-| 4 | ERA5 přes OWID | `temp_mean_c`, `temp_winter_c` (XII–II), `precip_mm` | 1940– | průměr za celé území státu |
+| 4 | ERA5 přes OWID | `temp_mean_c`, `temp_winter_c` (XII předch. roku + I + II), `precip_mm`, `weather_src` | 1940– | průměr za celé území státu; **Malta chybí v OWID → bod Valletta z Open-Meteo** (`weather_src = era5_capital_point`) |
 | 5 | Open-Meteo (ERA5) | `sun_hours_year`, `sun_hours_dark` (X–III), `sun_share_of_daylight` | 1940– | **bod = hlavní město** |
 | 6 | Eurostat `hlth_rs_physcat` | `psy_per100k`, `*_interp`, `psy_per100k_mean` | různé | díry u některých zemí → používat průměr |
 | 7 | Eurostat `nama_10_pc`, `une_rt_a` | `gdp_eur_per_cap`, `unemp_15_24_pct` | | |
