@@ -71,38 +71,109 @@ def _owid_values(df: pd.DataFrame) -> list[str]:
             and pd.api.types.is_numeric_dtype(df[c])]
 
 
+GBD_DIR = "ihme_gbd"  # data/raw/ihme_gbd/  – ručně stažené CSV/ZIP z GBD Results Tool
+
+GBD_LOCATIONS = {  # název lokality v GBD -> kód Eurostatu
+    "austria": "AT", "belgium": "BE", "bulgaria": "BG", "cyprus": "CY", "czechia": "CZ",
+    "czech republic": "CZ", "germany": "DE", "denmark": "DK", "estonia": "EE",
+    "greece": "EL", "spain": "ES", "finland": "FI", "france": "FR", "croatia": "HR",
+    "hungary": "HU", "ireland": "IE", "italy": "IT", "lithuania": "LT", "luxembourg": "LU",
+    "latvia": "LV", "malta": "MT", "netherlands": "NL", "poland": "PL", "portugal": "PT",
+    "romania": "RO", "sweden": "SE", "slovenia": "SI", "slovakia": "SK", "norway": "NO",
+    "iceland": "IS", "switzerland": "CH",
+}
+GBD_CAUSES = {"depressive disorders": "dep", "anxiety disorders": "anx"}
+
+GBD_HOWTO = """\
+Data IHME GBD 2023 nejdou stáhnout automaticky: OWID je označuje jako
+"non-redistributable" (CSV vrací 403) a IHME vyžaduje bezplatný účet.
+Stáhni je ručně (cca 5 min):
+  1. https://vizhub.healthdata.org/gbd-results/  (přihlásit se / zaregistrovat zdarma)
+  2. GBD Estimate: Cause of death or injury | Measure: Prevalence | Metric: Rate
+     Cause: Depressive disorders + Anxiety disorders
+     Location: všech 27 zemí EU | Age: Age-standardized, All ages, 15-19 years,
+     20-24 years, 25-29 years | Sex: Both | Year: 2011–2023
+  3. Download -> CSV. Stažený ZIP (nebo rozbalené CSV) dej do složky
+     {path}
+  4. Spusť znovu: python build_dataset.py --only gbd  (a pak celé bez --only)"""
+
+
+def _read_gbd_files(folder) -> pd.DataFrame:
+    import zipfile
+    frames = []
+    for f in sorted(folder.glob("*")):
+        if f.suffix.lower() == ".csv":
+            frames.append(pd.read_csv(f))
+        elif f.suffix.lower() == ".zip":
+            with zipfile.ZipFile(f) as z:
+                for n in z.namelist():
+                    if n.lower().endswith(".csv"):
+                        frames.append(pd.read_csv(z.open(n)))
+    if not frames:
+        return pd.DataFrame()
+    df = pd.concat(frames, ignore_index=True)
+    # GBD Results Tool dává sloupce buď "location_name", nebo jen "location"
+    df.columns = [c.lower().removesuffix("_name") for c in df.columns]
+    return df.drop_duplicates()
+
+
+def _gbd_age_label(age: str) -> str | None:
+    a = str(age).lower()
+    if "standardized" in a:
+        return "agestd"
+    if a.startswith("all ages"):
+        return "allages"
+    m = re.match(r"(\d+)\s*(?:-|–|to)\s*(\d+)", a)
+    if m:
+        return f"{m.group(1)}_{m.group(2)}"
+    m = re.match(r"(\d+)\s*\+|(\d+)\s*plus", a)
+    if m:
+        return f"{m.group(1) or m.group(2)}plus"
+    return None
+
+
 def load_gbd() -> pd.DataFrame:
-    """Prevalence depresivních a úzkostných poruch (% populace).
+    """Prevalence depresivních a úzkostných poruch (% populace), IHME GBD.
 
-    - *_agestd : věkově standardizovaná prevalence, všechny věky, obě pohlaví
-    - *_<věk>  : prevalence podle věkových skupin (které skupiny OWID nabízí,
-                 vypíše se při načtení – zkontrolujte, zda jsou tam 15-19, 20-24)
+    Zdroj: ručně stažený export z GBD Results Tool v data/raw/ihme_gbd/ (viz GBD_HOWTO).
+    Metric "Rate" (na 100 000) se převádí na % (/1000), stejně jako to dělá OWID.
+    - dep_agestd, anx_agestd : věkově standardizovaná prevalence, obě pohlaví
+    - dep_allages            : hrubá prevalence (všechny věky)
+    - dep_15_19, dep_20_24, dep_25_29 (a stejně anx_*) : podle věku
     """
-    out = None
-    for disorder, short in [("depressive_disorders", "dep"), ("anxiety_disorders", "anx")]:
-        # a) věkově standardizovaná
-        a = _owid_csv("prevalence-of-mental-disorders",
-                      f"&age=all_ages&disorder={disorder}&metric=share_age_standardized&sex=both",
-                      f"owid_gbd_{short}_agestd.csv")
-        vcols = _owid_values(a)
-        a = _iso3_to_geo(a, "Code")[["geo", "Year", vcols[0]]]
-        a.columns = ["geo", "year", f"{short}_agestd"]
+    from .config import RAW_DIR
+    folder = RAW_DIR / GBD_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    df = _read_gbd_files(folder)
+    if df.empty:
+        raise DataSourceError(GBD_HOWTO.format(path=folder))
+    need = {"measure", "location", "sex", "age", "cause", "metric", "year", "val"}
+    if not need <= set(df.columns):
+        raise DataSourceError(f"Neočekávané sloupce v exportu GBD: {list(df.columns)}")
 
-        # b) podle věku – každý sloupec = jedna věková skupina
-        b = _owid_csv("mental-disorders-prevalence-by-age", f"&disorder={disorder}",
-                      f"owid_gbd_{short}_by_age.csv")
-        vcols = _owid_values(b)
-        print(f"    věkové sloupce ({short}): {vcols}")
-        b = _iso3_to_geo(b, "Code")
-        rename = {}
-        for c in vcols:
-            m = re.search(r"(\d+)\s*[-–]\s*(\d+)|(\d+)\+|all ages|age-standardized", c, re.I)
-            label = _slug(m.group(0).replace("+", "plus")) if m else _slug(c)[-20:]
-            rename[c] = f"{short}_{label}"
-        b = b[["geo", "Year"] + vcols].rename(columns=rename | {"Year": "year"})
-
-        part = a.merge(b, on=["geo", "year"], how="outer")
-        out = part if out is None else out.merge(part, on=["geo", "year"], how="outer")
+    df = df[df["measure"].str.lower().str.startswith("prevalence")
+            & df["sex"].str.lower().eq("both")]
+    metrics = set(df["metric"].str.lower())
+    if "rate" in metrics:
+        df = df[df["metric"].str.lower() == "rate"].assign(val=lambda d: d["val"] / 1000)
+    else:
+        raise DataSourceError(f"V exportu GBD chybí metric 'Rate' (je tam: {metrics}). "
+                              "'Percent' v GBD znamená podíl na všech příčinách, ne prevalenci.")
+    df = df.assign(geo=df["location"].str.lower().str.replace(r"\s*\(.*\)", "", regex=True)
+                   .map(GBD_LOCATIONS),
+                   short=df["cause"].str.lower().map(GBD_CAUSES),
+                   age_label=df["age"].map(_gbd_age_label))
+    unknown = sorted(set(df.loc[df["geo"].isna(), "location"]))
+    if unknown:
+        print(f"    ! neznámé lokality GBD (ignoruji): {unknown[:10]}")
+    df = df.dropna(subset=["geo", "short", "age_label"])
+    df = df[df["geo"].isin(COUNTRIES)]
+    df["variable"] = df["short"] + "_" + df["age_label"]
+    if df.duplicated(["geo", "year", "variable"]).any():
+        raise DataSourceError("Export GBD obsahuje duplicitní řádky (víc verzí/odhadů?)")
+    out = df.pivot(index=["geo", "year"], columns="variable", values="val").reset_index()
+    out.columns.name = None
+    print(f"    proměnné GBD: {[c for c in out.columns if c not in ('geo', 'year')]}")
     return restrict_years(out)
 
 

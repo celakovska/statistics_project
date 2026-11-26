@@ -23,7 +23,7 @@ from src.config import PROCESSED_DIR, YEAR_MIN, YEAR_MAX, COUNTRIES
 # Pořadí kroků = pořadí importu
 STEPS = [
     ("social_media",   loaders.load_social_media,   "Eurostat isoc_ci_ac_i – sociální sítě"),
-    ("gbd",            loaders.load_gbd,            "IHME GBD 2023 (OWID) – deprese, úzkosti"),
+    ("gbd",            loaders.load_gbd,            "IHME GBD 2023 (ruční export z GBD Results Tool) – deprese, úzkosti"),
     ("suicide",        loaders.load_suicide,        "Eurostat hlth_cd_asdr2/acdr2 – sebevraždy"),
     ("weather",        loaders.load_weather_owid,   "ERA5 (OWID) – teplota, srážky"),
     ("sunshine",       loaders.load_sunshine,       "Open-Meteo – sluneční svit"),
