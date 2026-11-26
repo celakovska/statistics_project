@@ -22,7 +22,7 @@ class DataSourceError(RuntimeError):
     pass
 
 
-def fetch(url: str, cache_name: str, params=None, timeout: int = 120, retries: int = 3) -> Path:
+def fetch(url: str, cache_name: str, params=None, timeout: int = 120, retries: int = 4) -> Path:
     """Stáhne URL do data/raw/<cache_name>. Pokud soubor existuje, použije cache.
 
     Když stahování selže, je možné soubor stáhnout ručně v prohlížeči
@@ -39,9 +39,26 @@ def fetch(url: str, cache_name: str, params=None, timeout: int = 120, retries: i
         try:
             print(f"    [download] {url}")
             r = requests.get(url, params=params, headers=HEADERS, timeout=timeout)
+            if r.status_code == 429:  # rate limit (Open-Meteo) -> počkat a zkusit znovu
+                wait = int(r.headers.get("Retry-After", 0) or 0) or 20 * attempt
+                print(f"    pokus {attempt}/{retries}: 429 Too Many Requests, čekám {wait} s")
+                last_err = requests.HTTPError("429 Too Many Requests")
+                time.sleep(wait)
+                continue
             r.raise_for_status()
-            path.write_bytes(r.content)
+            if not r.content:
+                raise requests.RequestException("prázdná odpověď")
+            tmp = path.with_suffix(path.suffix + ".part")
+            tmp.write_bytes(r.content)
+            tmp.replace(path)  # do cache jen kompletní soubor
             return path
+        except requests.HTTPError as e:
+            last_err = e
+            code = e.response.status_code if e.response is not None else None
+            print(f"    pokus {attempt}/{retries} selhal: {e}")
+            if code is not None and 400 <= code < 500:
+                break  # 403/404 se opakováním nespraví
+            time.sleep(3 * attempt)
         except requests.RequestException as e:
             last_err = e
             print(f"    pokus {attempt}/{retries} selhal: {e}")
